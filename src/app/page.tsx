@@ -1,15 +1,60 @@
 "use client";
 
-import * as React from "react";
 import { useState, useEffect, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookOpen, Plus, Search, Settings, Trash2, Sparkles } from "lucide-react";
+import { div } from "framer-motion/client";
 
-import { motion, AnimatePresence } from "framer-motion";
+// Define Todo interface locally since we're having module resolution issues
+interface Todo {
+  _id: string;
+  title: string;
+  description?: string;
+  completed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Mock API functions - replace these with actual API calls
+const api = {
+  getTodos: async (): Promise<Todo[]> => {
+    const response = await fetch('/api/todos');
+    if (!response.ok) throw new Error('Failed to fetch todos');
+    return response.json();
+  },
+  createTodo: async (data: { title: string; description?: string }) => {
+    const response = await fetch('/api/todos', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) throw new Error('Failed to create todo');
+    return response.json();
+  },
+  updateTodo: async (id: string, data: Partial<Todo>) => {
+    const response = await fetch(`/api/todos/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    if (!response.ok) throw new Error('Failed to update todo');
+    return response.json();
+  },
+  deleteTodo: async (id: string) => {
+    const response = await fetch(`/api/todos/${id}`, {
+      method: 'DELETE'
+    });
+    if (!response.ok) throw new Error('Failed to delete todo');
+    // For 204 No Content responses, return null instead of trying to parse JSON
+    if (response.status === 204) return null;
+    return response.json();
+  }
+};
 
 // Animation variants
 const container = {
@@ -36,12 +81,9 @@ const tapEffect = {
   scale: 0.98
 };
 
-interface Note {
+interface Note extends Omit<Todo, '_id'> {
   id: string;
-  title: string;
   content: string;
-  createdAt: string; // Store as ISO string for serialization
-  updatedAt?: string;
 }
 
 export default function Notebook() {
@@ -51,99 +93,126 @@ export default function Notebook() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [currentNoteId, setCurrentNoteId] = useState<string | null>(null);
-  const [isMounted, setIsMounted] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Load notes from localStorage on mount
+  // Load notes from MongoDB on mount
   useEffect(() => {
-    try {
-      const savedNotes = localStorage.getItem('notes');
-      if (savedNotes) {
-        setNotes(JSON.parse(savedNotes));
+    const fetchNotes = async () => {
+      try {
+        setIsLoading(true);
+        const data = await api.getTodos();
+        // Map MongoDB todos to our Note interface
+        const formattedNotes = data.map((todo: Todo) => ({
+          id: todo._id,
+          title: todo.title,
+          content: todo.description || '',
+          completed: todo.completed,
+          createdAt: todo.createdAt,
+          updatedAt: todo.updatedAt
+        }));
+        setNotes(formattedNotes);
+        setError(null);
+      } catch (err) {
+        console.error('Failed to load notes:', err);
+        setError('Failed to load notes. Please try again later.');
+      } finally {
+        setIsLoading(false);
       }
-    } catch (error) {
-      console.error('Failed to load notes from localStorage', error);
-    }
-    setIsMounted(true);
+    };
+
+    fetchNotes();
   }, []);
 
-  // Save notes to localStorage whenever they change
-  useEffect(() => {
-    if (isMounted) {
-      try {
-        localStorage.setItem('notes', JSON.stringify(notes));
-      } catch (error) {
-        console.error('Failed to save notes to localStorage', error);
-      }
-    }
-  }, [notes, isMounted]);
-
+  // No need to save to localStorage anymore as we're using MongoDB
+  // This effect can be removed as we're now using the database for persistence
   // Memoize filtered notes for better performance
   const filteredNotes = useMemo(() => {
     if (!searchQuery) return notes;
-    const query = searchQuery.toLowerCase();
-    return notes.filter(note => 
-      note.title.toLowerCase().includes(query) ||
-      note.content.toLowerCase().includes(query)
+    return notes.filter(
+      (note) =>
+        note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (note.content && note.content.toLowerCase().includes(searchQuery.toLowerCase()))
     );
   }, [notes, searchQuery]);
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSaveNote = async (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmedTitle = title.trim();
-    const trimmedContent = content.trim();
-    
-    if (!trimmedTitle || !trimmedContent) return;
+    if (!title.trim()) return;
 
-    const now = new Date().toISOString();
-
-    if (isEditing && currentNoteId) {
-      setNotes(notes.map(note => 
-        note.id === currentNoteId 
-          ? { 
-              ...note, 
-              title: trimmedTitle, 
-              content: trimmedContent, 
-              updatedAt: now 
-            } 
-          : note
-      ));
-    } else {
-      const newNote: Note = {
-        id: Date.now().toString(),
-        title: trimmedTitle,
-        content: trimmedContent,
-        createdAt: now,
-      };
-      setNotes([newNote, ...notes]);
+    try {
+      if (isEditing && currentNoteId) {
+        // Update existing note
+        const updatedNote = await api.updateTodo(currentNoteId, {
+          title,
+          description: content,
+          completed: false
+        });
+        
+        setNotes(notes.map(note => 
+          note.id === currentNoteId 
+            ? { ...note, title, content: content || '', updatedAt: updatedNote.updatedAt }
+            : note
+        ));
+      } else {
+        // Create new note
+        const newNote = await api.createTodo({
+          title,
+          description: content,
+        });
+        
+        setNotes([{
+          id: newNote._id,
+          title: newNote.title,
+          content: newNote.description || '',
+          completed: newNote.completed,
+          createdAt: newNote.createdAt,
+          updatedAt: newNote.updatedAt
+        }, ...notes]);
+      }
+      
+      // Reset form
+      setTitle('');
+      setContent('');
+      setIsEditing(false);
+      setCurrentNoteId(null);
+    } catch (err) {
+      console.error('Failed to save note:', err);
+      setError('Failed to save note. Please try again.');
     }
-
-    setTitle("");
-    setContent("");
-    setIsEditing(false);
-    setCurrentNoteId(null);
   };
 
-  const handleEdit = (note: Note) => {
+  const handleEditNote = (note: Note) => {
     setTitle(note.title);
     setContent(note.content);
     setIsEditing(true);
     setCurrentNoteId(note.id);
   };
 
-  const handleDelete = (id: string) => {
-    setNotes(notes.filter(note => note.id !== id));
-    if (currentNoteId === id) {
-      setTitle("");
-      setContent("");
-      setIsEditing(false);
-      setCurrentNoteId(null);
+  const handleDeleteNote = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this note?')) return;
+    
+    try {
+      await api.deleteTodo(id);
+      setNotes(notes.filter(note => note.id !== id));
+    } catch (err) {
+      console.error('Failed to delete note:', err);
+      setError('Failed to delete note. Please try again.');
     }
   };
 
-  if (!isMounted) {
+  if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-blue-50 to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 p-4 md:p-8 transition-colors duration-300">
         <div className="animate-pulse text-gray-500">Loading notes...</div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-blue-50 to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 p-4 md:p-8">
+        <div className="text-red-500">{error}</div>
       </div>
     );
   }
@@ -259,7 +328,7 @@ export default function Notebook() {
                           ? 'ring-2 ring-indigo-500 dark:ring-indigo-500/70 shadow-lg' 
                           : 'hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-900/50'
                       }`}
-                      onClick={() => handleEdit(note)}
+                      onClick={() => handleEditNote(note)}
                     >
                       <CardHeader className="p-4">
                         <div className="flex justify-between items-start">
@@ -272,7 +341,7 @@ export default function Notebook() {
                             className="h-6 w-6 text-gray-400 hover:text-red-500 dark:hover:bg-red-500/10 rounded-full transition-colors"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleDelete(note.id);
+                              handleDeleteNote(note.id);
                             }}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -305,7 +374,7 @@ export default function Notebook() {
           className="lg:col-span-2"
         >
           <Card className="h-full bg-white/80 dark:bg-gray-800/80 backdrop-blur-sm border border-gray-100 dark:border-gray-700 shadow-lg overflow-hidden">
-            <form onSubmit={handleSubmit}>
+            <form onSubmit={handleSaveNote}>
               <CardHeader className="border-b border-gray-100 dark:border-gray-700 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-gray-800/50 dark:to-gray-900/50">
                 <CardTitle>
                   <Input
@@ -354,3 +423,5 @@ export default function Notebook() {
     </div>
   );
 }
+
+
