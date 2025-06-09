@@ -1,12 +1,14 @@
 "use client";
 
+import * as React from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BookOpen, Plus, Search, Settings, Trash2, Sparkles } from "lucide-react";
-import { useState, useEffect } from "react";
+
 import { motion, AnimatePresence } from "framer-motion";
 
 // Animation variants
@@ -34,12 +36,13 @@ const tapEffect = {
   scale: 0.98
 };
 
-type Note = {
+interface Note {
   id: string;
   title: string;
   content: string;
-  createdAt: Date;
-};
+  createdAt: string; // Store as ISO string for serialization
+  updatedAt?: string;
+}
 
 export default function Notebook() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -48,28 +51,68 @@ export default function Notebook() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [currentNoteId, setCurrentNoteId] = useState<string | null>(null);
+  const [isMounted, setIsMounted] = useState(false);
 
-  const filteredNotes = notes.filter(note => 
-    note.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    note.content.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Load notes from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedNotes = localStorage.getItem('notes');
+      if (savedNotes) {
+        setNotes(JSON.parse(savedNotes));
+      }
+    } catch (error) {
+      console.error('Failed to load notes from localStorage', error);
+    }
+    setIsMounted(true);
+  }, []);
+
+  // Save notes to localStorage whenever they change
+  useEffect(() => {
+    if (isMounted) {
+      try {
+        localStorage.setItem('notes', JSON.stringify(notes));
+      } catch (error) {
+        console.error('Failed to save notes to localStorage', error);
+      }
+    }
+  }, [notes, isMounted]);
+
+  // Memoize filtered notes for better performance
+  const filteredNotes = useMemo(() => {
+    if (!searchQuery) return notes;
+    const query = searchQuery.toLowerCase();
+    return notes.filter(note => 
+      note.title.toLowerCase().includes(query) ||
+      note.content.toLowerCase().includes(query)
+    );
+  }, [notes, searchQuery]);
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!title.trim() || !content.trim()) return;
+    const trimmedTitle = title.trim();
+    const trimmedContent = content.trim();
+    
+    if (!trimmedTitle || !trimmedContent) return;
+
+    const now = new Date().toISOString();
 
     if (isEditing && currentNoteId) {
       setNotes(notes.map(note => 
         note.id === currentNoteId 
-          ? { ...note, title, content, createdAt: new Date() } 
+          ? { 
+              ...note, 
+              title: trimmedTitle, 
+              content: trimmedContent, 
+              updatedAt: now 
+            } 
           : note
       ));
     } else {
       const newNote: Note = {
         id: Date.now().toString(),
-        title,
-        content,
-        createdAt: new Date(),
+        title: trimmedTitle,
+        content: trimmedContent,
+        createdAt: now,
       };
       setNotes([newNote, ...notes]);
     }
@@ -97,13 +140,13 @@ export default function Notebook() {
     }
   };
 
-  const [isMounted, setIsMounted] = useState(false);
-
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
-
-  if (!isMounted) return null;
+  if (!isMounted) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="animate-pulse text-gray-500">Loading notes...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50 to-indigo-50 dark:from-gray-900 dark:via-gray-800 dark:to-gray-900 p-4 md:p-8 transition-colors duration-300">
@@ -128,6 +171,7 @@ export default function Notebook() {
           <Button 
             variant="ghost" 
             size="icon"
+            aria-label="Settings"
             className="rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 transition-all duration-300"
           >
             <Settings className="h-5 w-5 text-gray-600 dark:text-gray-300" />
@@ -148,8 +192,10 @@ export default function Notebook() {
           >
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 group-focus-within:text-indigo-500 transition-colors" />
             <Input
+              id="search-notes"
               type="search"
               placeholder="Search notes..."
+              aria-label="Search notes"
               className="pl-10 bg-white/70 dark:bg-gray-800/70 backdrop-blur-sm border-gray-200 dark:border-gray-700 focus-visible:ring-2 focus-visible:ring-indigo-500/50 transition-all duration-300 hover:shadow-md"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -164,11 +210,14 @@ export default function Notebook() {
                 setCurrentNoteId(null);
                 setTitle("");
                 setContent("");
+                // Focus on title input after clearing
+                setTimeout(() => document.getElementById('note-title')?.focus(), 0);
               }}
+              aria-label="Create new note"
             >
               <span className="relative z-10 flex items-center">
                 <Plus className="mr-2 h-4 w-4 group-hover:rotate-90 transition-transform" /> 
-                New Note
+                {isEditing ? 'Cancel' : 'New Note'}
               </span>
               <span className="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-500 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></span>
             </Button>
